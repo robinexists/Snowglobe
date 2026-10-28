@@ -1,0 +1,1 @@
+Publicly viewable snowglobe animation
