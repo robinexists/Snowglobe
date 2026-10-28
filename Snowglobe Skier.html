@@ -1,0 +1,639 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Snowglobe Skier</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: one full-screen stage; globe centered, caption top-left, controls along the bottom. Two colours only: Klein blue and white. */
+:root {
+  --klein: #002fa7;
+  --klein-soft: rgba(0, 47, 167, 0.62);
+  --paper: #f6f8fd;
+  --white: #ffffff;
+  --line: rgba(0, 47, 167, 0.25);
+  --body: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: light;
+}
+html, body { height: 100%; }
+body {
+  background: var(--paper);
+  color: var(--klein);
+  font-family: var(--body);
+  overflow: hidden;
+}
+#c { position: fixed; inset: 0; display: block; touch-action: manipulation; }
+.hud {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 18px);
+  left: max(18px, env(safe-area-inset-left, 0px));
+  right: max(18px, env(safe-area-inset-right, 0px));
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 32rem;
+}
+.hud h1 {
+  margin: 0;
+  font-weight: 700;
+  font-size: 0.8rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.hud p {
+  margin: 0;
+  color: var(--klein-soft);
+  font-size: 0.95rem;
+  line-height: 1.45;
+  min-height: 2.9em;
+}
+.controls {
+  position: fixed;
+  left: 0; right: 0;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  pointer-events: none;
+}
+button {
+  pointer-events: auto;
+  font: 600 0.95rem/1 var(--body);
+  color: var(--klein);
+  background: var(--white);
+  border: 1.5px solid var(--klein);
+  border-radius: 999px;
+  padding: 0.8em 1.3em;
+  cursor: pointer;
+  transition: transform .1s, background .2s;
+}
+button:active { transform: scale(.97); }
+button:focus-visible { outline: 2px solid var(--klein); outline-offset: 3px; }
+button.primary { background: var(--klein); color: var(--white); }
+button:disabled { opacity: .4; cursor: default; }
+button.nudge { animation: nudge 1.6s ease-in-out infinite; }
+@keyframes nudge {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0,47,167,0); }
+  50% { box-shadow: 0 0 0 8px rgba(0,47,167,.18); }
+}
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 78px);
+  transform: translateX(-50%);
+  background: var(--klein);
+  color: var(--white);
+  font-size: 0.88rem;
+  padding: 0.6em 1em;
+  border-radius: 10px;
+  max-width: calc(100% - 32px);
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .3s;
+}
+.toast.show { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { button.nudge { animation: none; } }
+</style>
+
+<canvas id="c" aria-label="A snow globe with a mountain range and a cross-country skier"></canvas>
+<div class="hud">
+  <h1>Snowglobe Skier</h1>
+  <p id="cap">The skier keeps to the one old track up the valley, back and forth, the easiest way between the peaks.</p>
+</div>
+<div class="controls">
+  <button id="shake" class="primary">Shake the globe</button>
+  <button id="restore" hidden>Bring back the old track</button>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(() => {
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const capEl = document.getElementById('cap');
+const shakeBtn = document.getElementById('shake');
+const restoreBtn = document.getElementById('restore');
+const toastEl = document.getElementById('toast');
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const KLEIN = '#002fa7', WHITE = '#ffffff';
+const kl = a => `rgba(0,47,167,${a})`;
+const wh = a => `rgba(255,255,255,${a})`;
+
+function mkRng(s) { return () => { s |= 0; s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const rnd = mkRng(20261021);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const wrapA = a => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
+
+/* ---------- Camera: perspective over a heightfield, inside a unit-circle globe ---------- */
+const F = 1.2, CAMH = 45, HZ = -0.32;
+const proj = (x, z, h) => [F * x / z, HZ + F * (CAMH - h) / z];
+
+/* The old, well-worn loop, threading over the passes */
+// one fixed route: from the foreground, winding up the valleys into the distance
+const TN = 500, track = [];
+for (let i = 0; i < TN; i++) {
+  const t = i / (TN - 1);
+  const z = 75 + 175 * t;   // ends while the skier is still easy to see
+  const x = 22 * Math.sin(Math.PI * 2 * 1.2 * t + 0.4) - 6 + 5 * Math.sin(t * 17);
+  track.push({ x, z });
+}
+let L = 0;
+for (let i = 0; i < TN; i++) {
+  const p = track[i], last = i === TN - 1;
+  const a = last ? track[i - 1] : p, b = last ? p : track[i + 1];
+  const dx = b.x - a.x, dz = b.z - a.z, d = Math.hypot(dx, dz);
+  p.s = L; p.len = last ? 0 : d; p.tx = dx / d; p.tz = dz / d; p.nx = p.tz; p.nz = -p.tx;
+  L += p.len;
+}
+function trackAt(s) {
+  s = clamp(s, 0, L);
+  let lo = 0, hi = TN - 1;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (track[m].s <= s) lo = m; else hi = m - 1; }
+  const p = track[lo], f = p.len ? (s - p.s) / p.len : 0;
+  return { x: p.x + p.tx * p.len * f, z: p.z + p.tz * p.len * f, h: Math.atan2(p.tx, p.tz) };
+}
+function nearestS(x, z) {
+  let best = 0, bd = 1e9;
+  for (const p of track) { const d = (p.x - x) ** 2 + (p.z - z) ** 2; if (d < bd) { bd = d; best = p.s; } }
+  return best;
+}
+function distToTrack(x, z) {
+  if (z > 420 || z < 20) return 1e9;
+  let bd = 1e18;
+  for (let i = 0; i < TN; i += 4) { const p = track[i]; const d = (p.x - x) ** 2 + (p.z - z) ** 2; if (d < bd) bd = d; }
+  return Math.sqrt(bd);
+}
+
+/* Mountains: a high backdrop range, and peaks set right on the loop so the track must climb over saddles */
+const peaks = [];
+for (let i = 0; i < 18; i++) {
+  const z = 470 + rnd() * 430;
+  peaks.push({ x: (rnd() * 2 - 1) * z * 0.95 / F, z, h: (80 + rnd() * 120) * 0.8, s: 45 + rnd() * 60 });
+}
+// high peaks everywhere; the valley along the route is carved out in hRaw
+for (let i = 0; i < 46; i++) {
+  const z = 60 + rnd() * 400;
+  peaks.push({ x: (rnd() * 2 - 1) * 0.95 * z / F, z, h: (45 + rnd() * 45) * 0.8, s: 14 + rnd() * 14 });
+}
+function hRaw(x, z) {
+  let h = 2 * Math.sin(x * 0.045 + 1.3) * Math.sin(z * 0.05);
+  for (const p of peaks) {
+    const d2 = (x - p.x) ** 2 + (z - p.z) ** 2;
+    if (d2 < 9 * p.s * p.s) h += p.h * Math.exp(-d2 / (2 * p.s * p.s));
+  }
+  // the route follows the valley floor, the easiest way through; peaks stay off it
+  const d = distToTrack(x, z);
+  if (d < 80) h *= 1 - 0.96 * Math.exp(-d * d / (2 * 18 * 18));
+  h *= 0.4 + 0.6 * smooth(55, 150, z);   // keep the foreground low so it doesn't hide the valley
+  return Math.max(0, h);
+}
+const MEAN = 16;               // flattening pulls everything toward this height
+let k = 1, kGoal = 1;          // 1 = full relief, lower = flatter
+const hk = raw => MEAN + (raw - MEAN) * k;
+const hAt = (x, z) => hk(hRaw(x, z));
+
+/* Terrain rows, drawn back to front as white ridgelines */
+const NR = 92, NC = 140, rows = [];
+for (let i = 0; i < NR; i++) {
+  const z = 52 * Math.pow(950 / 52, i / (NR - 1));
+  const hw = z * 1.08 / F, xs = [], hs = [];
+  for (let j = 0; j < NC; j++) { const x = -hw + 2 * hw * j / (NC - 1); xs.push(x); hs.push(hRaw(x, z)); }
+  rows.push({ z, xs, hs });
+}
+for (const p of track) p.raw = hRaw(p.x, p.z);
+
+/* A few simple trees, down in the valleys */
+const trees = [];
+for (let n = 0; n < 400 && trees.length < 34; n++) {
+  const z = 90 + rnd() * 280;
+  const x = (rnd() * 2 - 1) * 0.85 * z / F;
+  const raw = hRaw(x, z);
+  if (raw < 16 && distToTrack(x, z) > 9) trees.push({ x, z, raw, size: 7 + rnd() * 5 });
+}
+
+function walkable(x, z) {
+  if (z < 70 || z > 320) return false;
+  const [sx, sy] = proj(x, z, hAt(x, z));
+  return (sx / 0.86) ** 2 + ((sy + 0.15) / 0.62) ** 2 < 1 && sy < (sx > 0.28 ? 0.26 : 0.48);
+}
+
+/* The glass is a simple brain seen from the side: cerebrum with gyri bumps along the top, a cerebellum tucked under the back */
+const BRX = 1, BRY = 0.76;
+function brainPath() {
+  ctx.beginPath();
+  const n = BRAIN.length;
+  for (let i = 0; i < n; i++) {
+    // closed Catmull-Rom through the traced outline
+    const p0 = BRAIN[(i - 1 + n) % n], p1 = BRAIN[i], p2 = BRAIN[(i + 1) % n], p3 = BRAIN[(i + 2) % n];
+    if (i === 0) ctx.moveTo(p1[0], p1[1]);
+    ctx.bezierCurveTo(p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6,
+                      p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6, p2[0], p2[1]);
+  }
+  ctx.closePath();
+}
+// side view facing right: frontal lobe right, temporal lobe dipping below, cerebellum tucked under the back (left)
+const BRAIN = [
+  [-0.99, 0.07], [-0.94, -0.25], [-0.76, -0.49], [-0.48, -0.68], [-0.13, -0.77], [0.22, -0.76],
+  [0.54, -0.67], [0.78, -0.47], [0.94, -0.21], [1.0, 0.07], [0.96, 0.25], [0.85, 0.32],
+  [0.5, 0.32], [0.34, 0.34], [0.31, 0.46], [0.24, 0.56], [0.05, 0.59], [-0.16, 0.59],
+  [-0.25, 0.74], [-0.45, 0.82], [-0.69, 0.81], [-0.85, 0.68], [-0.87, 0.53], [-0.95, 0.32],
+];
+const insideE = (x, y, m) => (x / BRX) ** 2 + (y / BRY) ** 2 < m * m;
+
+/* ---------- State ---------- */
+const SPEED = 40, SK = 2.6;    // SK: the skier is drawn larger than life so they read at this scale
+const start = trackAt(0);
+const S = { mode: 'track', s: 0, dir: 1, x: start.x, z: start.z, h: start.h, phase: 0, face: 1, target: null, returnS: 0, lastTrail: null };
+let oldA = 1, burying = false;   // burying: the last shake's snow is still covering the old track
+let shakeT = -1;
+const SHD = 1.4;
+let parts = [], shakeTotal = 0, airF = 0;
+let trails = [], buried = [];
+let marker = null;
+let time = 0, lastCap = '', shakes = 0;
+let W = 0, H = 0, DPR = 1, R = 100, CX = 0, CY = 0;
+let off = [0, 0, 0];
+
+for (let i = 0; i < 80; i++) parts.push(ambient(true));
+function ambient(anywhere) {
+  const x = (rnd() * 2 - 1) * 0.88;
+  const top = -BRY * 0.92 * Math.sqrt(Math.max(0, 1 - (x / BRX) ** 2));
+  return { kind: 'a', x, y: anywhere ? top + rnd() * (0.9 - top) : top, vx: 0, vy: 0.05,
+    g: 0.12 + rnd() * 0.12, drag: 2, r: 0.003 + rnd() * 0.005, land: -0.1 + Math.pow(rnd(), 0.8) * 0.9,
+    f: 0.6 + rnd() * 1.4, ph: rnd() * 7, state: 0, age: 1, fade: 1 };
+}
+
+function shakeOffset(t) {
+  if (t < 0 || t > SHD) return [0, 0, 0];
+  const e = Math.sin(Math.PI * t / SHD) * (reduced ? 0.3 : 1);
+  return [0.07 * e * Math.sin(t * Math.PI * 2 * 4.4), 0.035 * e * Math.sin(t * Math.PI * 2 * 6.1 + 1), 0.05 * e * Math.sin(t * Math.PI * 2 * 4.4 + 0.6)];
+}
+
+function shake() {
+  if (shakeT >= 0) return;
+  shakeT = 0; shakes++; burying = true;
+  buried = buried.concat(trails); trails = [];
+  S.mode = 'wait'; S.target = null; S.lastTrail = null; marker = null;
+  kGoal = Math.max(0.12, (kGoal >= 1 ? 1 : kGoal) * 0.38);
+  for (let i = 0; i < 1100; i++) {
+    let x, y;
+    do { x = (rnd() * 2 - 1) * 0.9; y = 0.05 + rnd() * 0.65; } while (!insideE(x, y, 0.9));
+    parts.push({ kind: 's', x, y, vx: (rnd() - 0.5) * 1.8, vy: -(0.6 + rnd() * 1.9),
+      g: 0.75 + rnd() * 0.6, drag: 1.9 + rnd() * 0.8, r: 0.003 + rnd() * 0.007,
+      land: -0.1 + Math.pow(rnd(), 0.7) * 0.9, f: 0.5 + rnd() * 1.6, ph: rnd() * 7, state: 0, age: 0, fade: 1 });
+  }
+  shakeTotal += 1100;
+  shakeBtn.classList.remove('nudge');
+}
+
+function restore() {
+  if (S.mode !== 'free') return;
+  oldA = 1; buried = []; kGoal = 1; burying = false;
+  trails = []; S.lastTrail = null; marker = null;
+  // clear any snow still falling, and put the skier straight back on the old track
+  parts = parts.filter(p => p.kind === 'a'); shakeTotal = 0; airF = 0;
+  S.s = nearestS(S.x, S.z);
+  const p = trackAt(S.s);
+  S.x = p.x; S.z = p.z; S.h = S.dir > 0 ? p.h : wrapA(p.h + Math.PI);
+  S.target = null; S.mode = 'track';
+}
+
+function randomTarget() {
+  for (let i = 0; i < 80; i++) {
+    const z = 75 + 240 * Math.pow(rnd(), 1.1);
+    const x = (rnd() * 2 - 1) * 0.75 * z / F;
+    if (walkable(x, z) && Math.hypot(x - S.x, z - S.z) > 70) return [x, z];
+  }
+  return [0, 170];
+}
+
+/* ---------- Update ---------- */
+function update(dt) {
+  time += dt;
+  let acc = [0, 0];
+  if (shakeT >= 0) {
+    shakeT += dt;
+    off = shakeOffset(shakeT);
+    const h = 1 / 120, a = shakeOffset(shakeT - h), b = shakeOffset(shakeT + h);
+    acc = [(a[0] - 2 * off[0] + b[0]) / (h * h), (a[1] - 2 * off[1] + b[1]) / (h * h)];
+    if (shakeT > SHD) { shakeT = -1; off = [0, 0, 0]; acc = [0, 0]; }
+  }
+  const shaking = shakeT >= 0;
+  // relief eases toward its goal: quickly while snow is flying, gently when restoring
+  k += (kGoal - k) * Math.min(1, dt * (kGoal < k ? 1.1 : 5));
+
+  let air = 0;
+  for (const p of parts) {
+    if (p.state === 0) {
+      const g = shaking ? p.g * 0.15 : p.g;
+      p.vx += (-acc[0] * 0.04 + (shaking ? (rnd() - 0.5) * 7 : 0)) * dt;
+      p.vy += (g - acc[1] * 0.04) * dt;
+      const d = Math.exp(-p.drag * dt);
+      p.vx *= d; p.vy *= d;
+      p.x += p.vx * dt + Math.sin(time * p.f + p.ph) * 0.035 * dt;
+      p.y += p.vy * dt;
+      const e = (p.x / BRX) ** 2 + (p.y / BRY) ** 2;
+      if (e > 0.94) {
+        const sc = 0.969 / Math.sqrt(e);
+        p.x *= sc; p.y *= sc;
+        let nx = p.x / (BRX * BRX), ny = p.y / (BRY * BRY);
+        const nl = Math.hypot(nx, ny); nx /= nl; ny /= nl;
+        const vn = p.vx * nx + p.vy * ny;
+        if (vn > 0) { p.vx -= 1.5 * vn * nx; p.vy -= 1.5 * vn * ny; }
+      }
+      p.age += dt;
+      if (!shaking && p.vy > 0 && p.y > p.land && p.age > 0.6) p.state = 1;
+      if (p.kind === 's') air++;
+    } else if (p.state === 1) {
+      p.fade -= dt * 1.4;
+      if (p.fade <= 0) p.state = 2;
+    }
+  }
+  for (let i = 0; i < parts.length; i++) if (parts[i].state === 2 && parts[i].kind === 'a') parts[i] = ambient(false);
+  if (shakeTotal > 0) {
+    airF = air / shakeTotal;
+    if (burying) oldA = Math.min(oldA, (1 - smooth(0.05, 0.92, 1 - airF)) * 0.55);
+    parts = parts.filter(p => !(p.kind === 's' && p.state === 2));
+    if (air === 0 && !shaking) { shakeTotal = 0; airF = 0; if (burying) { oldA = 0; buried = []; burying = false; } }
+  }
+
+  // skier: slower uphill, quicker down
+  const grade = () => (hAt(S.x + Math.sin(S.h) * 2, S.z + Math.cos(S.h) * 2) - hAt(S.x, S.z)) / 2;
+  let moved = 0;
+  if (S.mode === 'track') {
+    const v = SPEED * clamp(1 - grade() * 2.2, 0.55, 1.3);
+    // out to the end of the track, turn round, and back again
+    S.s += S.dir * v * dt;
+    if (S.s >= L) { S.s = L; S.dir = -1; } else if (S.s <= 0) { S.s = 0; S.dir = 1; }
+    const p = trackAt(S.s);
+    moved = Math.hypot(p.x - S.x, p.z - S.z);
+    S.x = p.x; S.z = p.z; S.h = S.dir > 0 ? p.h : wrapA(p.h + Math.PI);
+  } else if (S.mode === 'wait') {
+    if (!shaking && airF < 0.45) { S.mode = 'free'; S.target = randomTarget(); }
+  } else {
+    const [tx, tz] = S.target;
+    const dx = tx - S.x, dz = tz - S.z, dist = Math.hypot(dx, dz);
+    const diff = wrapA(Math.atan2(dx, dz) - S.h);
+    const turn = S.mode === 'return' ? 2.6 : 1.7;
+    S.h += clamp(diff, -turn * dt, turn * dt) + Math.sin(time * 0.6) * 0.1 * dt;
+    const v = SPEED * clamp(1 - grade() * 2.2, 0.55, 1.3) * (Math.abs(diff) > 1.2 ? 0.6 : 1);
+    const nx = S.x + Math.sin(S.h) * v * dt, nz = S.z + Math.cos(S.h) * v * dt;
+    if (walkable(nx, nz) || S.mode === 'return') { moved = v * dt; S.x = nx; S.z = nz; }
+    else if (S.mode === 'free') { S.target = randomTarget(); S.h += 1.5 * dt; }
+    if (S.mode === 'return' && dist < 6) { S.mode = 'track'; S.s = S.returnS; S.lastTrail = null; }
+    else if (S.mode === 'free' && dist < 10) { S.target = randomTarget(); marker = null; }
+    if (S.mode === 'free' && (!S.lastTrail || Math.hypot(S.x - S.lastTrail.x, S.z - S.lastTrail.z) > 2)) {
+      const pt = { x: S.x, z: S.z, h: S.h, raw: hRaw(S.x, S.z), t: time, brk: !S.lastTrail };
+      trails.push(pt); S.lastTrail = pt;
+    }
+  }
+  S.phase += moved * 0.3;
+  while (trails.length && time - trails[0].t > 35) trails.shift();
+  if (marker) { marker.life -= dt; if (marker.life <= 0) marker = null; }
+
+  let cap;
+  if (S.mode === 'track') cap = 'The skier keeps to the one old track up the valley, back and forth, the easiest way between the peaks.';
+  else if (S.mode === 'wait') cap = 'The snow swirls and settles. The peaks sink, the valleys fill.';
+  else if (S.mode === 'return') cap = 'The mountains rise again. Heading back to the old track.';
+  else cap = 'Lower peaks, higher valleys and no track to follow. Any route works now. Tap the snow to pick one.';
+  if (cap !== lastCap) { capEl.textContent = cap; lastCap = cap; }
+  shakeBtn.disabled = shaking;
+  restoreBtn.hidden = S.mode !== 'free';
+}
+
+/* ---------- Drawing ---------- */
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  R = Math.max(80, Math.min(W * 0.44, (H - 170) / 2.04));
+  CX = W / 2;
+  CY = (H - 2.04 * R) / 2 + 0.78 * R + 6;
+}
+
+function line(a, b, w, c) { ctx.strokeStyle = c; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); }
+
+function drawRow(r, i) {
+  ctx.beginPath();
+  ctx.moveTo(-1.2, 1.1);
+  for (let j = 0; j < NC; j++) {
+    const z = r.z;
+    ctx.lineTo(F * r.xs[j] / z, HZ + F * (CAMH - hk(r.hs[j])) / z);
+  }
+  ctx.lineTo(1.2, 1.1);
+  ctx.closePath();
+  ctx.fillStyle = WHITE; ctx.fill();
+  const near = 1 - i / NR;
+  ctx.strokeStyle = kl(0.12 + 0.2 * near);
+  ctx.lineWidth = 0.001 + 0.0014 * near;
+  ctx.beginPath();
+  for (let j = 0; j < NC; j++) {
+    const p = [F * r.xs[j] / r.z, HZ + F * (CAMH - hk(r.hs[j])) / r.z];
+    if (j === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+  }
+  ctx.stroke();
+}
+
+function drawTrackSeg(i) {
+  const a = track[i], b = track[(i + 2) % TN];
+  // one groove per ski, a ski-width apart
+  const G = 0.6, w = Math.max(0.003, F * 0.3 / a.z), c = kl(oldA);
+  ctx.lineCap = 'round';
+  for (const s of [-1, 1]) {
+    line(proj(a.x + a.nx * G * s, a.z + a.nz * G * s, hk(a.raw) + 0.3),
+         proj(b.x + b.nx * G * s, b.z + b.nz * G * s, hk(b.raw) + 0.3), w, c);
+  }
+}
+function drawTrailSeg(list, i, mult) {
+  const a = list[i - 1], b = list[i];
+  const al = 0.85 * Math.max(0, 1 - (time - b.t) / 35) * mult;
+  if (al < 0.01) return;
+  const G = 0.6, w = Math.max(0.0026, F * 0.26 / b.z), c = kl(al);
+  const na = [Math.cos(a.h), -Math.sin(a.h)], nb = [Math.cos(b.h), -Math.sin(b.h)];
+  ctx.lineCap = 'round';
+  for (const s of [-1, 1]) {
+    line(proj(a.x + na[0] * G * s, a.z + na[1] * G * s, hk(a.raw) + 0.3),
+         proj(b.x + nb[0] * G * s, b.z + nb[1] * G * s, hk(b.raw) + 0.3), w, c);
+  }
+}
+function drawTree(t) {
+  const [sx, sy] = proj(t.x, t.z, hk(t.raw));
+  const hp = F * t.size / t.z;
+  ctx.fillStyle = KLEIN;
+  ctx.beginPath(); ctx.moveTo(sx - hp * 0.28, sy); ctx.lineTo(sx + hp * 0.28, sy); ctx.lineTo(sx, sy - hp); ctx.fill();
+}
+function drawMarker() {
+  const [sx, sy] = proj(marker.x, marker.z, hAt(marker.x, marker.z)), m = F * SK / marker.z;
+  ctx.globalAlpha = Math.min(1, marker.life);
+  line([sx, sy], [sx, sy - 1.7 * m], Math.max(0.0015, 0.05 * m), KLEIN);
+  ctx.fillStyle = KLEIN;
+  ctx.beginPath(); ctx.moveTo(sx, sy - 1.7 * m); ctx.lineTo(sx + 0.8 * m, sy - 1.45 * m); ctx.lineTo(sx, sy - 1.2 * m); ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+function drawSkier() {
+  const m = F * SK / S.z;
+  const ux = Math.sin(S.h), uz = Math.cos(S.h), lx = Math.cos(S.h), lz = -Math.sin(S.h);
+  const st = Math.sin(S.phase);
+  const P = (x, z) => proj(x, z, hAt(x, z));
+  const base = P(S.x, S.z), ahead = P(S.x + ux * 3, S.z + uz * 3);
+  if (Math.abs(ahead[0] - base[0]) > 0.0015) S.face = Math.sign(ahead[0] - base[0]);
+  const fd = S.face;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const sides = [-1, 1].map(side => {
+    const o = st * 0.42 * SK * side;
+    const cx = S.x + lx * 0.6 * side + ux * o, cz = S.z + lz * 0.6 * side + uz * o;   // skis sit in the two grooves
+    return { sw: st * side, foot: P(cx, cz), tail: P(cx - ux * 0.95 * SK, cz - uz * 0.95 * SK), tip: P(cx + ux * 1.1 * SK, cz + uz * 1.1 * SK) };
+  });
+  for (const s of sides) {
+    line(s.tail, s.tip, Math.max(0.0018, 0.07 * m), KLEIN);
+    line(s.tip, [s.tip[0] + (s.tip[0] - s.tail[0]) * 0.05, s.tip[1] - 0.12 * m], Math.max(0.0016, 0.06 * m), KLEIN);
+  }
+  const fy = (sides[0].foot[1] + sides[1].foot[1]) / 2, fx = (sides[0].foot[0] + sides[1].foot[0]) / 2;
+  const hip = [fx + fd * 0.08 * m, fy - 0.88 * m];
+  const sh = [hip[0] + fd * 0.2 * m, hip[1] - 0.56 * m];
+  const head = [sh[0] + fd * 0.07 * m, sh[1] - 0.21 * m];
+  const lw = 0.14 * m;
+  const order = [...sides].sort((a, b) => a.sw - b.sw);
+  const limb = (s, c) => {
+    const foot = [s.foot[0], s.foot[1] - 0.05 * m];
+    const knee = [(hip[0] + foot[0]) / 2 + fd * (0.1 + 0.08 * Math.max(0, -s.sw)) * m, (hip[1] + foot[1]) / 2];
+    line(hip, knee, lw, c); line(knee, foot, lw * 0.85, c);
+  };
+  const arm = (s, c) => {
+    const a = -s.sw;
+    const hand = [sh[0] + fd * (0.08 + 0.38 * a) * m, sh[1] + (0.5 - 0.12 * Math.abs(a)) * m];
+    const elbow = [(sh[0] + hand[0]) / 2 - fd * 0.04 * m, (sh[1] + hand[1]) / 2 + 0.04 * m];
+    const tip = [hand[0] - fd * (0.35 + 0.25 * Math.max(0, -a)) * m, fy + 0.02 * m];
+    line(hand, tip, Math.max(0.0012, 0.03 * m), c);
+    line(sh, elbow, lw * 0.9, c); line(elbow, hand, lw * 0.85, c);
+  };
+  const back = '#6f86cc';
+  limb(order[0], back); arm(order[1], back);
+  line(hip, sh, 0.28 * m, KLEIN);
+  limb(order[1], KLEIN); arm(order[0], KLEIN);
+  ctx.fillStyle = KLEIN;
+  ctx.beginPath(); ctx.arc(head[0], head[1], 0.12 * m, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(head[0] - fd * 0.07 * m, head[1] - 0.16 * m, 0.06 * m, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawParticles() {
+  ctx.beginPath();
+  for (const p of parts) {
+    if (p.state === 2) continue;
+    const r = p.r * (p.state === 1 ? Math.max(0, p.fade) : 1);
+    if (r <= 0) continue;
+    ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+  }
+  ctx.fillStyle = WHITE; ctx.fill();
+  ctx.strokeStyle = kl(0.35); ctx.lineWidth = 0.0012; ctx.stroke();
+}
+
+function drawBase() {
+  ctx.save(); ctx.translate(0, 1.25); ctx.scale(1, 0.08);
+  const sg = ctx.createRadialGradient(0, 0, 0, 0, 0, 1.05); sg.addColorStop(0, kl(0.22)); sg.addColorStop(1, kl(0));
+  ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(0, 0, 1.05, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  ctx.fillStyle = KLEIN;
+  // brain stem running down into the pedestal, just in front of the cerebellum
+  ctx.beginPath(); ctx.moveTo(-0.08, 0.58); ctx.quadraticCurveTo(-0.02, 0.72, -0.06, 0.86); ctx.lineTo(0.16, 0.86); ctx.quadraticCurveTo(0.12, 0.72, 0.16, 0.56); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-0.6, 0.86); ctx.lineTo(0.6, 0.86); ctx.lineTo(0.82, 1.24); ctx.lineTo(-0.82, 1.24); ctx.closePath(); ctx.fill();
+  const label = (S.mode === 'track' || S.mode === 'return') ? 'THE OLD TRACK' : 'FRESH SNOW';
+  ctx.fillStyle = WHITE;
+  ctx.font = '600 0.062px "Instrument Sans", system-ui, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '0.014px';
+  ctx.fillText(label, 0, 1.06);
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+}
+
+function draw() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = '#f6f8fd'; ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(CX + off[0] * R, CY + off[1] * R);
+  ctx.rotate(off[2]);
+  ctx.scale(R, R);
+
+  ctx.save();
+  brainPath(); ctx.clip();
+  ctx.fillStyle = KLEIN; ctx.fillRect(-1, -1, 2, 2);
+  ctx.fillStyle = WHITE; ctx.beginPath(); ctx.arc(0.42, -0.6, 0.075, 0, Math.PI * 2); ctx.fill();
+
+  // everything that sits on the terrain, sorted far to near
+  const items = [];
+  if (oldA > 0.005) {
+    for (let i = 0; i < TN - 2; i += 2) items.push({ z: track[i].z, f: () => drawTrackSeg(i) });
+    for (let i = 1; i < buried.length; i++) if (!buried[i].brk) items.push({ z: buried[i].z, f: () => drawTrailSeg(buried, i, oldA / 0.55) });
+  }
+  for (let i = 1; i < trails.length; i++) if (!trails[i].brk) items.push({ z: trails[i].z, f: () => drawTrailSeg(trails, i, 1) });
+  for (const t of trees) items.push({ z: t.z, f: () => drawTree(t) });
+  items.push({ z: S.z - 0.5, f: drawSkier });
+  if (marker) items.push({ z: marker.z - 0.4, f: drawMarker });
+  items.sort((a, b) => b.z - a.z);
+  let ii = 0;
+  for (let i = NR - 1; i >= 0; i--) {
+    drawRow(rows[i], i);
+    const zNext = i > 0 ? rows[i - 1].z : -1;
+    while (ii < items.length && items[ii].z > zNext) items[ii++].f();
+  }
+  while (ii < items.length) items[ii++].f();
+
+  drawParticles();
+  if (shakeTotal > 0) { ctx.fillStyle = wh(0.55 * smooth(0, 0.8, airF)); ctx.fillRect(-1, -1, 2, 2); }
+  ctx.restore();
+
+  ctx.lineWidth = 0.022; ctx.strokeStyle = KLEIN; ctx.lineJoin = 'round';
+  brainPath(); ctx.stroke();
+  ctx.lineCap = 'round'; ctx.lineWidth = 0.028; ctx.strokeStyle = wh(0.45);
+  ctx.beginPath(); ctx.ellipse(0, -0.05, 0.84, 0.6, 0, Math.PI * 1.12, Math.PI * 1.34); ctx.stroke();
+  drawBase();
+  ctx.restore();
+}
+
+/* ---------- Input ---------- */
+let toastTimer = 0;
+function toast(msg) {
+  toastEl.textContent = msg; toastEl.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2600);
+}
+function pick(sx, sy) {
+  for (let z = 56; z < 340; z += 1.5) {
+    const x = sx * z / F;
+    if (HZ + F * (CAMH - hAt(x, z)) / z <= sy) return walkable(x, z) ? [x, z] : null;
+  }
+  return null;
+}
+cv.addEventListener('click', e => {
+  const lx = (e.clientX - CX) / R, ly = (e.clientY - CY) / R;
+  if (!insideE(lx, ly, 1.02)) return;
+  if (S.mode === 'track') { toast('The old track holds the skier. Shake the globe to clear it.'); shakeBtn.classList.add('nudge'); return; }
+  if (S.mode === 'wait') { toast('Let the snow settle first.'); return; }
+  if (S.mode === 'return') return;
+  const g = pick(lx, ly);
+  if (!g) { toast('Tap the snow closer to the skier.'); return; }
+  S.target = g; marker = { x: g[0], z: g[1], life: 4 };
+});
+shakeBtn.addEventListener('click', shake);
+restoreBtn.addEventListener('click', restore);
+addEventListener('resize', resize);
+setTimeout(() => { if (S.mode === 'track') shakeBtn.classList.add('nudge'); }, 14000);
+
+resize();
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  update(dt); draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+
+</body></html>
